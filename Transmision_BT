@@ -1,0 +1,161 @@
+;Este código se encarga de la recepción bluetooth por puerto serie. Utiliza las herramientas que ofrece el PIC para recibir por medio del puerto C, pin 7.
+LIST        P=16F887
+    #include    <p16f887.inc>
+
+    __CONFIG    _CONFIG1, _LVP_OFF & _FCMEN_ON & _IESO_OFF & _BOR_OFF & _CPD_OFF & _CP_OFF & _MCLRE_ON & _PWRTE_ON & _WDT_OFF & _INTRC_OSC_NOCLKOUT
+    __CONFIG    _CONFIG2, _WRT_OFF & _BOR21V
+
+DATO_RX     EQU     0x20
+
+    ORG     0x00
+    GOTO    INICIO
+
+    ORG     0x04
+    GOTO    ISR
+
+;=========================
+; INICIALIZACIÓN
+;=========================
+INICIO:
+    ; Oscilador interno a 4 MHz	
+    BANKSEL OSCCON
+    movlw   b'01100000'
+    movwf   OSCCON
+
+    ; Configuración de puertos
+    BANKSEL TRISA
+    movlw   b'00000000'      ; RA0, RA1, RA6, RA7 como salidas
+    movwf   TRISA
+    BANKSEL TRISC
+    movlw   b'10000000'      ; RC7 como entrada (RX)
+    movwf   TRISC
+    clrf    TRISB
+
+    ; Limpiar puertos
+    BANKSEL PORTA
+    clrf    PORTA
+    BANKSEL PORTC
+    clrf    PORTC
+    clrf    PORTB
+
+    ; Deshabilitar entradas analógicas
+    BANKSEL ANSEL
+    clrf    ANSEL
+    clrf    ANSELH
+
+    ; Configuración USART
+    BANKSEL TXSTA
+    movlw   b'00100100'      ; BRGH=1, TXEN=1
+    movwf   TXSTA
+    movlw   .25              ; SPBRG = 25 para 9600bps a 4MHz
+    movwf   SPBRG
+    BANKSEL RCSTA
+    movlw   b'10010000'      ; SPEN=1, CREN=1
+    movwf   RCSTA
+
+    ; Habilitar interrupción por recepción
+    BANKSEL PIE1
+    bsf     PIE1, RCIE
+    BANKSEL INTCON
+    bsf     INTCON, PEIE
+    bsf     INTCON, GIE
+
+    goto    LOOP
+
+;=========================
+; BUCLE PRINCIPAL
+;=========================
+LOOP:
+    goto    LOOP
+
+;=========================
+; INTERRUPCIONES
+;=========================
+ISR:
+    ; Verificar si hubo recepción serial
+    BTFSS   PIR1, RCIF
+    goto    SALIR_ISR
+
+    movf    RCREG, W
+    movwf   DATO_RX
+
+    ; Comparar con caracteres
+    movf    DATO_RX, W
+    xorlw   'A'         ; Adelante
+    btfsc   STATUS, Z
+    goto    ADELANTE
+
+    movf    DATO_RX, W
+    xorlw   'R'         ; Retroceder
+    btfsc   STATUS, Z
+    goto    RETROCEDER
+
+    movf    DATO_RX, W
+    xorlw   'I'         ; Izquierda
+    btfsc   STATUS, Z
+    goto    IZQUIERDA
+
+    movf    DATO_RX, W
+    xorlw   'D'         ; Derecha
+    btfsc   STATUS, Z
+    goto    DERECHA
+
+    movf    DATO_RX, W
+    xorlw   'S'         ; Stop
+    btfsc   STATUS, Z
+    goto    STOP
+
+    goto    SALIR_ISR
+
+;=========================
+; FUNCIONES DE MOVIMIENTO
+;=========================
+ADELANTE:
+    bcf     PORTA, 0
+    bcf     PORTA, 1
+    bcf     PORTA, 6
+    bcf     PORTA, 7
+    bsf     PORTA, 1
+    bsf     PORTA, 7
+    goto    SALIR_ISR
+
+RETROCEDER:
+    bcf     PORTA, 0
+    bcf     PORTA, 1
+    bcf     PORTA, 6
+    bcf     PORTA, 7
+    bsf     PORTA, 0
+    bsf     PORTA, 6
+    goto    SALIR_ISR
+
+IZQUIERDA:
+    bcf     PORTA, 0
+    bcf     PORTA, 1
+    bcf     PORTA, 6
+    bcf     PORTA, 7
+    bsf     PORTA, 0
+    goto    SALIR_ISR
+
+DERECHA:
+    bcf     PORTA, 0
+    bcf     PORTA, 1
+    bcf     PORTA, 6
+    bcf     PORTA, 7
+    bsf     PORTA, 6
+    goto    SALIR_ISR
+
+STOP:
+    bcf     PORTA, 0
+    bcf     PORTA, 1
+    bcf     PORTA, 6
+    bcf     PORTA, 7
+    goto    SALIR_ISR
+
+;=========================
+; SALIDA DE ISR
+;=========================
+SALIR_ISR:
+    bcf     PIR1, RCIF
+    retfie
+
+    END
