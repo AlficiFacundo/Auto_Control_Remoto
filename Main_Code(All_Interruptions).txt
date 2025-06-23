@@ -1,0 +1,307 @@
+%TRABAJO FINAL DIGITAL II
+%INTEGRANTES: 
+ALFICI, FACUNDO
+GALLONE, FRANCESCO
+GOMEZ, DOLORES PILAR
+list    p=16f887
+#include "p16f887.inc"
+; Configuración de bits:
+; - _INTRC_OSC_NOCLKOUT: Usa el oscilador interno sin salida de clock.
+; - _WDT_OFF: Watchdog Timer desactivado.
+; - _PWRTE_ON: Power-up Timer activado.
+; - _MCLRE_ON: Habilita el pin MCLR como entrada de reset.
+; - _CP_OFF y _CPD_OFF: Protección de código y datos desactivada.
+; - _IESO_OFF: Oscilador interno/externo deshabilitado.
+; - _FCMEN_OFF: Fail Safe Clock Monitor desactivado.
+; - _LVP_OFF: Low Voltage Programming desactivado.
+__CONFIG    _CONFIG1, _LVP_OFF & _FCMEN_ON & _IESO_OFF & _BOR_OFF & _CPD_OFF & _CP_OFF & _MCLRE_ON & _PWRTE_ON & _WDT_OFF & _INTRC_OSC_NOCLKOUT
+; En CONFIG2 configuramos:
+; - _BOR21V: Brown-out Reset a 2.1V, adecuado para una fuente estable de 5V.
+; - _WRT_OFF: Protección contra escritura desactivada.
+__CONFIG    _CONFIG2, _WRT_OFF & _BOR21V
+;************************ VARIABLES ****************
+	DATO_RX		EQU 0x20 ; Para transmisión BT
+	FLAG_3S		EQU 0x21 ; Bandera de 3s
+	DISTANCIA	EQU 0x22 ; Distancia en cm
+	TRG_FLAG	EQU 0x24 ;Para testear si se envió el trigger y no se quedó en 
+	FLAG_ECHO       EQU 0x23 ; 1: ECHO alto, se está midiendo
+	
+;************************
+	ORG 0x00		 
+	GOTO CONFIGURACION
+	;Organización de la Rutina de Servicio a la Interrupción
+	ORG 0x04
+	GOTO ISR
+
+CONFIGURACION
+    ;Configuración de Puertos
+    BANKSEL TRISA
+    CLRF    TRISB
+    BSF	    TRISB, RB0	    ; RB0 como entrada para un botón(Interrupción)
+    CLRF    TRISA	    ; RA0, RA1, RA6 y RA7 como salida de motor (Salidas)
+    BSF	    TRISA, RA4	    ; RA3 como Trigger (Salida) y RA4 como ECHO (Entrada)
+    MOVLW   b'10000000'     ; RC7 como entrada (RX)
+    MOVWF   TRISC
+    ;Oscilador interno
+    BANKSEL OSCCON
+    movlw   b'01100000'	    ;Oscilador interno a 4 MHz	
+    movwf   OSCCON
+    ;Entradas Analógicas/Digitales
+    BANKSEL ANSELH
+    CLRF    ANSEL
+    CLRF    ANSELH
+    ;Configuración Interrupciones por RB0 y TMR0
+    MOVLW   b'11010000'	    ;Habilito interrupciones globales y por RB0
+    MOVWF   INTCON
+    MOVLW   b'00000000'	    ; Pull-up activado; Prescaler en 2 para TMR0. ;Flanco de bajada para RB0
+    MOVWF   OPTION_REG	    ; La idea es usarlo para contar 58uS
+    BANKSEL WPUB
+    BSF	    WPUB, WPUB0	    ;Activo la pull-up de RB0
+    ; Configuración USART
+    BANKSEL TXSTA
+    movlw   b'00100100'      ; BRGH=1, TXEN=1
+    movwf   TXSTA
+    movlw   .25              ; SPBRG = 25 para 9600bps a 4MHz
+    movwf   SPBRG
+    BANKSEL RCSTA
+    movlw   b'10010000'      ; SPEN=1, CREN=1
+    movwf   RCSTA
+    ; Habilitar interrupción por recepción
+    BANKSEL PIE1
+    BSF     PIE1, RCIE
+    ;Configuración TMR1 para Polling
+    BANKSEL PIR1
+    BCF	    PIR1, TMR1IF
+    MOVLW   b'00100001'	    ;Habilito TMR1 y pongo prescaler en 1:4.
+    MOVWF   T1CON
+    ;Inicialización de puertos y variables
+    BANKSEL PORTA
+    CLRF    PORTC
+    CLRF    PORTB
+    CLRF    PORTA
+    CLRF    FLAG_ECHO
+    CLRF    DISTANCIA
+    CLRF    FLAG_3S
+    CLRF    DATO_RX
+    CLRF    TRG_FLAG
+    CLRF    TMR0
+    
+START 
+    BSF	    PORTA, RA3	    ;Enciendo Trigger
+    MOVLW   .1
+    MOVWF   TRG_FLAG	    ;Si la bandera es 1 es porque sí se mandó el trigger
+    CALL    CONTAR_10uS	    ;Por datasheet, se piden 10uS de pulso en Trigger
+    BCF	    PORTA, RA3	    ;Apago Trigger
+WAIT_ECHO_ALTO
+    BTFSS   TRG_FLAG, 0
+    GOTO    START
+    CLRF    TRG_FLAG
+    BTFSS   PORTA, RA4	    ;Cuando ECHO sea 1, se mide la distancia
+    GOTO    WAIT_ECHO_ALTO  ;Si no es 1, se espera a que se ponga en 1.
+    CLRF    DISTANCIA
+    MOVLW   .1
+    MOVWF   FLAG_ECHO
+    MOVLW   .224	    ;Cargo valor para contar 58uS (es 227 pero descuento 3 por las instrucciones siguientes)
+    MOVWF   TMR0
+    BCF	    INTCON, T0IF
+    BSF	    INTCON, T0IE    ;Habilito INT. por TMR0
+WAIT_ECHO_BAJO
+    BTFSC   PORTA, RA4 
+    GOTO    WAIT_ECHO_BAJO
+    CLRF    FLAG_ECHO
+    BCF	    INTCON, T0IE         ; Deshabilitar Interrupción de TMR0
+    CALL    PARADA_Y_RETROCESO
+    CALL    CONTAR_10MS
+    GOTO    START
+    
+;Rutina de Interrupciones    
+ISR
+    BTFSS   INTCON, T0IF    ;Testeo del TMR0, si no es, voy al botón
+    GOTO    CHECK_BT
+    BCF	    INTCON, T0IF    ;Bajo la bandera de TMR0
+    MOVF    FLAG_ECHO, W
+    BTFSS   STATUS, Z
+    INCF    DISTANCIA, F    ;Suma 1cm cada 58uS
+    CALL    OVERFLOW
+    MOVLW   .224	    ;Cargo .224 para descontarle las 3 instrucciones siguientes.
+    MOVWF   TMR0
+    RETFIE
+CHECK_BT
+    BTFSS   PIR1, RCIF
+    GOTO    CHECK_BOTON
+    bcf     PIR1, RCIF	;Bajo la bandera
+    movf    RCREG, W
+    movwf   DATO_RX
+    ; Comparar con caracteres
+    movf    DATO_RX, W
+    xorlw   'A'         ; Adelante
+    btfsc   STATUS, Z
+    CALL    ADELANTE
+
+    movf    DATO_RX, W
+    xorlw   'R'         ; Retroceder
+    btfsc   STATUS, Z
+    CALL    RETROCEDER
+
+    movf    DATO_RX, W
+    xorlw   'I'         ; Izquierda
+    btfsc   STATUS, Z
+    CALL    IZQUIERDA
+
+    movf    DATO_RX, W
+    xorlw   'D'         ; Derecha
+    btfsc   STATUS, Z
+    CALL    DERECHA
+
+    movf    DATO_RX, W
+    xorlw   'S'         ; Stop
+    btfsc   STATUS, Z
+    CALL    STOP
+    RETFIE
+CHECK_BOTON
+    BTFSS   INTCON, INTF
+    RETFIE
+    BCF	    INTCON, INTF
+    CALL    CONTAR_50MS	    ; Antirrebote
+    BSF	    PORTA, RA6	    ; Prendo el motor para ir a la derecha
+    CALL    CONTAR_3S	    ; Prendo un motor por 3 segundos (12 cuentas para 3 segundo)
+    BCF	    PORTA, RA6	    ; Apago el motor luego de los 3seg.
+    RETFIE
+
+CONTAR_10uS	; Contador del pulso del trigger
+    NOP
+    NOP
+    NOP
+    NOP
+    NOP
+    NOP
+    RETURN
+
+PARADA_Y_RETROCESO
+    BCF	    STATUS, C
+    MOVLW   .10
+    SUBWF   DISTANCIA, W
+    BTFSC   STATUS, C	    ;Si no hay carry, es menor a 10cm. Si hay, no hago nada.
+    RETURN
+    CALL    STOP
+    CALL    RETROCEDER
+    CALL    CONTAR_1S
+    CALL    STOP
+    RETURN
+
+ADELANTE
+    bcf     PORTA, 0
+    bcf     PORTA, 1
+    bcf     PORTA, 6
+    bcf     PORTA, 7
+    bsf     PORTA, 1
+    bsf     PORTA, 7
+    RETURN
+
+RETROCEDER
+    bcf     PORTA, 0
+    bcf     PORTA, 1
+    bcf     PORTA, 6
+    bcf     PORTA, 7
+    bsf     PORTA, 0
+    bsf     PORTA, 6
+    RETURN
+
+IZQUIERDA
+    bcf     PORTA, 0
+    bcf     PORTA, 1
+    bcf     PORTA, 6
+    bcf     PORTA, 7
+    bsf     PORTA, 0
+    RETURN
+
+DERECHA
+    bcf     PORTA, 0
+    bcf     PORTA, 1
+    bcf     PORTA, 6
+    bcf     PORTA, 7
+    bsf     PORTA, 6
+    RETURN
+
+STOP
+    bcf     PORTA, 0
+    bcf     PORTA, 1
+    bcf     PORTA, 6
+    bcf     PORTA, 7
+    RETURN
+    
+CONTAR_1S		;Esta subrutina cuenta 1 segundo con TMR1
+    BANKSEL T1CON
+    MOVLW   0x0B
+    MOVWF   TMR1H
+    MOVLW   0xDC
+    MOVWF   TMR1L
+    BANKSEL PIR1
+L1
+    BTFSS   PIR1, TMR1IF
+    GOTO    L1
+    BCF	    PIR1, TMR1IF
+    INCF    FLAG_3S
+    MOVLW   .4
+    SUBWF   FLAG_3S, W
+    BTFSS   STATUS, Z
+    GOTO    CONTAR_1S
+    CLRF    FLAG_3S
+    RETURN
+
+CONTAR_3S
+    BANKSEL T1CON
+    MOVLW   0x0B
+    MOVWF   TMR1H
+    MOVLW   0xDC
+    MOVWF   TMR1L
+    BANKSEL PIR1
+L2
+    BTFSS   PIR1, TMR1IF
+    GOTO    L2
+    BCF	    PIR1, TMR1IF
+    INCF    FLAG_3S
+    MOVLW   .12
+    SUBWF   FLAG_3S, W
+    BTFSS   STATUS, Z
+    GOTO    CONTAR_3S
+    CLRF    FLAG_3S
+    RETURN
+
+CONTAR_50MS    ;Contador de Antirrebote
+    BANKSEL T1CON
+    MOVLW   0xCF
+    MOVWF   TMR1H
+    MOVLW   0x2C
+    MOVWF   TMR1L
+    BANKSEL PIR1
+L3 
+    BTFSS   PIR1, TMR1IF
+    GOTO    L3
+    BCF	    PIR1, TMR1IF
+    RETURN
+    
+CONTAR_10MS    ;Contador entre mediciones el HC-SR04
+    BANKSEL T1CON
+    MOVLW   0xF6
+    MOVWF   TMR1H
+    MOVLW   0x3C
+    MOVWF   TMR1L
+    BANKSEL PIR1
+L4   
+    BTFSS   PIR1, TMR1IF
+    GOTO    L4
+    BCF	    PIR1, TMR1IF
+    RETURN
+    
+OVERFLOW
+    BCF	    STATUS, C
+    MOVLW   .99
+    SUBWF   DISTANCIA, W
+    BTFSS   STATUS, C	    ;Si hay carry, es mayor a 99cm. Si no hay, no hago nada.
+    RETURN
+    MOVLW   .99
+    MOVWF   DISTANCIA
+    RETURN
+    
+END
