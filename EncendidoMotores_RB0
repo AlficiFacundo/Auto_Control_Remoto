@@ -1,0 +1,90 @@
+;Este código usa la interrupción por RB0 para hacer que el motor gire sobre si mismo por 3 segundos. Está completo y testeado línea por línea desde MPLAB y con proteus. No uso TMR0 en este código aunque esté configurado, uso TMR1 sin interrupción para contar los segundos y el antirrebote.
+LIST    p=16f887
+        #include "p16f887.inc"
+        ; Configuración de bits:
+        ; - _INTRC_OSC_NOCLKOUT: Usa el oscilador interno sin salida de clock.
+        ; - _WDT_OFF: Watchdog Timer desactivado.
+        ; - _PWRTE_ON: Power-up Timer activado.
+        ; - _MCLRE_ON: Habilita el pin MCLR como entrada de reset.
+        ; - _CP_OFF y _CPD_OFF: Protección de código y datos desactivada.
+        ; - _IESO_OFF: Oscilador interno/externo deshabilitado.
+        ; - _FCMEN_OFF: Fail Safe Clock Monitor desactivado.
+        ; - _LVP_OFF: Low Voltage Programming desactivado.
+        __CONFIG _CONFIG1, _INTRC_OSC_NOCLKOUT & _WDT_OFF & _PWRTE_ON & _MCLRE_ON & _CP_OFF & _CPD_OFF & _IESO_OFF & _FCMEN_OFF & _LVP_OFF
+        ; En CONFIG2 configuramos:
+        ; - _BOR21V: Brown-out Reset a 2.1V, adecuado para una fuente estable de 5V.
+        ; - _WRT_OFF: Protección contra escritura desactivada.
+        __CONFIG _CONFIG2, _WRT_OFF & _BOR21V
+;************************ VARIABLES ****************
+	FLAG_3S		EQU 0x20
+	
+;************************
+	ORG 0x00		 
+	GOTO CONFIGURACION
+	;Organización de la Rutina de Servicio a la Interrupción
+	ORG 0x04
+	GOTO ISR
+
+CONFIGURACION
+    BANKSEL ANSELH
+    CLRF    ANSEL
+    CLRF    ANSELH	    ; Seleccion de puertos Digitales y Analogicos
+    MOVLW   b'10010000'	    ;Habilito interrupciones globales y por RB0
+    MOVWF   INTCON
+    MOVLW   b'10000111'	    ; Pull-up desact.; Prescaler en 256 para TMR0. ;Flanco de bajada para RB0 (Al final en este no se usa el TMR0)
+    MOVWF   OPTION_REG
+    BANKSEL TRISA
+    CLRF    TRISA	    ;RA6 como salida de motor
+    CLRF    TRISB	    
+    BSF	    TRISB, RB0	    ;RB0 como entrada para un botón(Interrupción)
+    BANKSEL PIR1
+    BCF	    PIR1, TMR1IF
+    MOVLW   b'00100001'	    ;Habilito TMR1 y pongo prescaler en 1:4
+    MOVWF   T1CON
+    CLRF    PORTB
+    CLRF    PORTA
+START 
+    GOTO    $
+ISR
+    BTFSS   INTCON, INTF
+    RETFIE
+    BCF	    INTCON, INTF
+    CALL    CONTAR_50MS	    ;Antirrebote
+    BSF	    PORTA, RA6
+    CALL    MOTORES_3S	    ;Prendo un motor por 3 segundos (12 cuentas para 3 segundo)
+    BCF	    PORTA, RA6
+    RETFIE
+    
+MOTORES_3S
+    BANKSEL T1CON
+    MOVLW   0x0B
+    MOVWF   TMR1H
+    MOVLW   0xDC
+    MOVWF   TMR1L
+    BANKSEL PIR1
+L1
+    BTFSS   PIR1, TMR1IF
+    GOTO    L1
+    BCF	    PIR1, TMR1IF
+    INCF    FLAG_3S
+    MOVLW   .12
+    SUBWF   FLAG_3S, W
+    BTFSS   STATUS, Z
+    GOTO    MOTORES_3S
+    CLRF    FLAG_3S
+    RETURN
+    
+CONTAR_50MS    ;Contador de Antirrebote
+    BANKSEL T1CON
+    MOVLW   0xCF
+    MOVWF   TMR1H
+    MOVLW   0x2C
+    MOVWF   TMR1L
+    BANKSEL PIR1
+L2 
+    BTFSS   PIR1, TMR1IF
+    GOTO    L2
+    BCF	    PIR1, TMR1IF
+    RETURN
+        
+END
